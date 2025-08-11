@@ -1,65 +1,255 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Audio-Driven Brightness</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Audio-driven Brightness — Single-file Web App</title>
   <style>
-    body { margin: 0; background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; }
-    #container { position: relative; }
-    canvas, video { display: block; max-width: 100%; }
-    #canvas { position: absolute; top: 0; left: 0; }
+    :root{--bg:#0b0b0b;--panel:#111;--accent:#4ea1ff;--muted:#aaa}
+    html,body{height:100%;margin:0;background:var(--bg);color:#eee;font-family:Inter,system-ui,Segoe UI,Roboto,'Helvetica Neue',Arial}
+    .wrap{max-width:1100px;margin:28px auto;padding:18px;background:linear-gradient(180deg,#070707, #0f0f0f);box-shadow:0 6px 30px rgba(0,0,0,.6);border-radius:12px}
+    header{display:flex;gap:16px;align-items:center}
+    h1{font-size:18px;margin:0}
+    .controls{display:flex;flex-wrap:wrap;gap:12px;margin-top:14px}
+    .controls > *{background:var(--panel);padding:10px;border-radius:8px}
+    label{display:flex;flex-direction:column;font-size:13px;color:var(--muted)}
+    input[type=file]{color:transparent}
+    button{background:var(--accent);border:0;padding:10px 12px;border-radius:8px;color:#012;cursor:pointer}
+    button.secondary{background:#333;color:#ddd}
+    .row{display:flex;gap:12px;align-items:center}
+    #container{position:relative;margin-top:16px;display:inline-block}
+    video{display:block;max-width:100%;border-radius:8px}
+    canvas{position:absolute;left:0;top:0;border-radius:8px}
+    .status{margin-left:12px;color:var(--muted);font-size:13px}
+    footer{margin-top:12px;color:var(--muted);font-size:13px}
+    .small{font-size:12px;color:var(--muted)}
   </style>
 </head>
 <body>
-  <div id="container">
-    <video id="video" src="your_video.mp4" muted playsinline></video>
-    <canvas id="canvas"></canvas>
+  <div class="wrap">
+    <header>
+      <h1>Audio-driven Brightness — Single-file Web App</h1>
+      <div class="status">Click <strong>Start</strong> after loading files (browser will ask for a gesture).</div>
+    </header>
+
+    <div class="controls">
+      <label>
+        Load Video
+        <input id="videoFile" type="file" accept="video/*">
+      </label>
+
+      <label>
+        Load Audio (mp3 recommended)
+        <input id="audioFile" type="file" accept="audio/*">
+      </label>
+
+      <div style="display:flex;flex-direction:column">
+        <span class="small">Sensitivity</span>
+        <input id="sensitivity" type="range" min="0.2" max="5" step="0.1" value="1.2">
+      </div>
+
+      <div style="display:flex;flex-direction:column">
+        <span class="small">Overlay Strength</span>
+        <input id="strength" type="range" min="0" max="1" step="0.01" value="0.7">
+      </div>
+
+      <div class="row">
+        <button id="startBtn">Start</button>
+        <button id="recordBtn" class="secondary">Start Recording</button>
+        <button id="downloadBtn" class="secondary" disabled>Download</button>
+      </div>
+
+      <div style="display:flex;flex-direction:column">
+        <span class="small">Preview mode</span>
+        <select id="mode">
+          <option value="brighten">Brighten (white overlay)</option>
+          <option value="dim">Dim (black overlay)</option>
+        </select>
+      </div>
+
+    </div>
+
+    <div id="container">
+      <video id="video" playsinline crossorigin="anonymous" style="background:#000"></video>
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <footer>
+      <div class="small">Usage: Load a video and an audio file (or use your own paths), click <strong>Start</strong> (user gesture required). Then you can <strong>Record</strong> the processed output and download it as a WebM file. Works in modern Chromium browsers.</div>
+    </footer>
   </div>
-  <audio id="audio" src="deep_breath_3.mp3" playsinline></audio>
 
   <script>
+    // Elements
+    const videoFile = document.getElementById('videoFile');
+    const audioFile = document.getElementById('audioFile');
+    const startBtn = document.getElementById('startBtn');
+    const recordBtn = document.getElementById('recordBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const sensitivityEl = document.getElementById('sensitivity');
+    const strengthEl = document.getElementById('strength');
+    const modeSel = document.getElementById('mode');
     const videoEl = document.getElementById('video');
-    const audioEl = document.getElementById('audio');
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
 
-    // Wait for user gesture to start playback & audio context
-    document.body.addEventListener('click', async () => {
-      await videoEl.play();
-      await audioEl.play();
+    let audioEl = new Audio();
+    audioEl.crossOrigin = 'anonymous';
+    audioEl.loop = false;
+    let audioCtx, analyser, sourceNode, audioDestination;
+    let dataArray;
+    let rafId;
 
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const source = audioCtx.createMediaElementSource(audioEl);
-      const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 256;
-      source.connect(analyser);
-      analyser.connect(audioCtx.destination);
+    let recorder;
+    let recordedBlobs = [];
 
-      const data = new Uint8Array(analyser.frequencyBinCount);
+    // Load files
+    videoFile.addEventListener('change', (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      const url = URL.createObjectURL(f);
+      videoEl.src = url;
+      videoEl.load();
+    });
 
-      function drawFrame() {
-        if (videoEl.readyState >= 2) {
-          canvas.width = videoEl.videoWidth;
-          canvas.height = videoEl.videoHeight;
-          ctx.drawImage(videoEl, 0, 0);
+    audioFile.addEventListener('change', (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      const url = URL.createObjectURL(f);
+      audioEl.src = url;
+      audioEl.load();
+    });
 
-          analyser.getByteTimeDomainData(data);
-          let sum = 0;
-          for (let i=0; i<data.length; i++) {
-            const v = data[i] - 128;
-            sum += v * v;
-          }
-          const rms = Math.sqrt(sum / data.length);
-          const bright = Math.min(Math.max(1 + rms / 64, 1), 2);
+    function initAudio() {
+      if (audioCtx) return;
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 2048;
+      sourceNode = audioCtx.createMediaElementSource(audioEl);
+      sourceNode.connect(analyser);
+      // connect to destination so you hear it
+      audioDestination = audioCtx.createMediaStreamDestination();
+      sourceNode.connect(audioDestination);
+      sourceNode.connect(audioCtx.destination);
+      dataArray = new Uint8Array(analyser.fftSize);
+    }
 
-          ctx.fillStyle = `rgba(255,255,255,${bright - 1})`;
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-        }
-        requestAnimationFrame(drawFrame);
+    function computeRMS(timeDomainArray) {
+      let sum = 0;
+      for (let i=0;i<timeDomainArray.length;i++){
+        const v = (timeDomainArray[i] - 128) / 128; // -1..1
+        sum += v * v;
       }
-      drawFrame();
-    }, { once: true });
+      return Math.sqrt(sum / timeDomainArray.length);
+    }
+
+    function drawFrame() {
+      if (videoEl.readyState >= 2) {
+        const w = videoEl.videoWidth;
+        const h = videoEl.videoHeight;
+        if (w && h) {
+          if (canvas.width !== w || canvas.height !== h) {
+            canvas.width = w; canvas.height = h;
+          }
+          ctx.drawImage(videoEl, 0, 0, w, h);
+
+          // get audio amplitude
+          analyser.getByteTimeDomainData(dataArray);
+          const rms = computeRMS(dataArray);
+
+          // sensitivity from UI
+          const sens = parseFloat(sensitivityEl.value) || 1.0;
+          const baseStrength = parseFloat(strengthEl.value) || 0.6;
+          // compute alpha (0..1)
+          // rms is typically small (0..~0.6). scale by sens
+          let alpha = Math.min(1, rms * sens * 2);
+          alpha = alpha * baseStrength;
+
+          if (modeSel.value === 'brighten') {
+            // white overlay to brighten
+            ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+            ctx.fillRect(0,0,w,h);
+          } else {
+            // black overlay to dim
+            ctx.fillStyle = `rgba(0,0,0,${alpha})`;
+            ctx.fillRect(0,0,w,h);
+          }
+        }
+      }
+      rafId = requestAnimationFrame(drawFrame);
+    }
+
+    startBtn.addEventListener('click', async () => {
+      try {
+        if (!videoEl.src) alert('Please load a video file.');
+        if (!audioEl.src) alert('Please load an audio file.');
+
+        // init audio graph
+        initAudio();
+
+        // resume context on gesture
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+        await Promise.all([videoEl.play(), audioEl.play()]);
+
+        // start drawing
+        if (!rafId) drawFrame();
+
+      } catch (err) {
+        console.error(err);
+        alert('Playback error: ' + err.message);
+      }
+    });
+
+    // Recording: capture canvas + audio
+    recordBtn.addEventListener('click', async () => {
+      if (recordBtn.textContent.includes('Start')) {
+        // begin recording
+        if (!audioCtx) initAudio();
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+        recordedBlobs = [];
+
+        const canvasStream = canvas.captureStream(30); // 30fps
+        const audioStream = audioDestination.stream;
+
+        // combine tracks
+        const mixedStream = new MediaStream();
+        canvasStream.getVideoTracks().forEach(t=>mixedStream.addTrack(t));
+        audioStream.getAudioTracks().forEach(t=>mixedStream.addTrack(t));
+
+        let options = {mimeType: 'video/webm;codecs=vp9,opus'};
+        if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+          options = {mimeType: 'video/webm;codecs=vp8,opus'};
+        }
+        recorder = new MediaRecorder(mixedStream, options);
+        recorder.ondataavailable = (e) => { if (e.data && e.data.size) recordedBlobs.push(e.data); };
+        recorder.onstop = () => {
+          const blob = new Blob(recordedBlobs, {type: 'video/webm'});
+          const url = URL.createObjectURL(blob);
+          downloadBtn.href = url;
+          downloadBtn.download = 'processed.webm';
+          downloadBtn.disabled = false;
+        };
+        recorder.start();
+        recordBtn.textContent = 'Stop Recording';
+        downloadBtn.disabled = true;
+      } else {
+        // stop
+        recorder.stop();
+        recordBtn.textContent = 'Start Recording';
+      }
+    });
+
+    downloadBtn.addEventListener('click', () => {
+      // the href is set when recorder stops
+    });
+
+    // cleanup on unload
+    window.addEventListener('beforeunload', ()=>{
+      if (rafId) cancelAnimationFrame(rafId);
+      if (audioCtx && audioCtx.state !== 'closed') audioCtx.close();
+    });
   </script>
 </body>
 </html>
-
