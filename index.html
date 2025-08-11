@@ -1,1 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Audio-Driven Brightness</title>
+  <style>
+    body { margin: 0; background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; }
+    #container { position: relative; }
+    canvas, video { display: block; max-width: 100%; }
+    #canvas { position: absolute; top: 0; left: 0; }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <video id="video" src="your_video.mp4" muted playsinline></video>
+    <canvas id="canvas"></canvas>
+  </div>
+  <audio id="audio" src="deep_breath_3.mp3" playsinline></audio>
+
+  <script>
+    const videoEl = document.getElementById('video');
+    const audioEl = document.getElementById('audio');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // Wait for user gesture to start playback & audio context
+    document.body.addEventListener('click', async () => {
+      await videoEl.play();
+      await audioEl.play();
+
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaElementSource(audioEl);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyser.connect(audioCtx.destination);
+
+      const data = new Uint8Array(analyser.frequencyBinCount);
+
+      function drawFrame() {
+        if (videoEl.readyState >= 2) {
+          canvas.width = videoEl.videoWidth;
+          canvas.height = videoEl.videoHeight;
+          ctx.drawImage(videoEl, 0, 0);
+
+          analyser.getByteTimeDomainData(data);
+          let sum = 0;
+          for (let i=0; i<data.length; i++) {
+            const v = data[i] - 128;
+            sum += v * v;
+          }
+          const rms = Math.sqrt(sum / data.length);
+          const bright = Math.min(Math.max(1 + rms / 64, 1), 2);
+
+          ctx.fillStyle = `rgba(255,255,255,${bright - 1})`;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+        requestAnimationFrame(drawFrame);
+      }
+      drawFrame();
+    }, { once: true });
+  </script>
+</body>
+</html>
 
